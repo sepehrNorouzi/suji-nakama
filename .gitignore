@@ -1,0 +1,32 @@
+# Node dependencies
+node_modules/
+
+# Build output
+build/
+dist/
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Environment files
+.env
+.env.*
+
+# Editor config
+.vscode/
+.idea/
+
+# TypeScript declarations (auto-generated)
+*.d.ts
+
+# Coverage and testing reports
+coverage/
+.nyc_output/
+
+# OS files
+.DS_Store
+Thumbs.db
+.cookie

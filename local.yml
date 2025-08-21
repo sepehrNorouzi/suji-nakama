@@ -1,0 +1,19 @@
+name: nakama1
+database:
+  address:
+    - "${DATABASE_ADDRESS}"
+logger:
+  level: DEBUG
+session:
+  token_expiry_sec: 7200
+socket:
+  max_message_size_bytes: 4096 # reserved buffer
+  max_request_size_bytes: 131072
+console:
+  username: "admin"
+  password: "password"
+  signing_key: "replace_with_random_string"
+  max_message_size_bytes: 409600
+
+runtime:
+  js_entrypoint: "../build/index.js"

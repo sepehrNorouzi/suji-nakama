@@ -1,0 +1,26 @@
+# Node dependencies (install fresh in the container)
+node_modules
+
+# Build artifacts
+build
+dist
+
+# Git and other VCS
+.git
+.gitignore
+
+# Docker files
+Dockerfile
+.dockerignore
+
+# Env files
+.env
+.env.*
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor directories
+.vscode
+.idea
