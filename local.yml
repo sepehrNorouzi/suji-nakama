@@ -16,4 +16,4 @@ console:
   max_message_size_bytes: 409600
 
 runtime:
-  js_entrypoint: "../build/index.js"
+  js_entrypoint: "./index.js"

@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nakama Sudoku Test Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .status {
+            background: #f0f0f0;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        .connected { background: #d4edda; }
+        .error { background: #f8d7da; }
+        .warning { background: #fff3cd; }
+        
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        
+        .game-board {
+            display: grid;
+            grid-template-columns: repeat(9, 30px);
+            grid-gap: 2px;
+            margin: 20px 0;
+            justify-content: start;
+        }
+        .cell {
+            width: 30px;
+            height: 30px;
+            border: 1px solid #ccc;
+            text-align: center;
+            line-height: 30px;
+            font-size: 14px;
+            background: white;
+        }
+        .pre-filled { background: #e9ecef; }
+        .player-filled { background: #d1ecf1; }
+        
+        .logs {
+            height: 200px;
+            overflow-y: scroll;
+            background: #f8f9fa;
+            padding: 10px;
+            border: 1px solid #dee2e6;
+            font-family: monospace;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Nakama Sudoku Test Client</h1>
+    
+    <div id="status" class="status">Disconnected</div>
+    
+    <div>
+        <button id="connectBtn" onclick="connect()">Connect</button>
+        <button id="findMatchBtn" onclick="findMatch()" disabled>Find Match</button>
+        <button id="leaveMatchBtn" onclick="leaveMatch()" disabled>Leave Match</button>
+        <button id="testMoveBtn" onclick="testMove()" disabled>Test Move (0,5)</button>
+    </div>
+    
+    <h3>Game Board:</h3>
+    <div id="gameBoard" class="game-board"></div>
+    
+    <h3>Logs:</h3>
+    <div id="logs" class="logs"></div>
+    
+    <script src="
+https://cdn.jsdelivr.net/npm/@heroiclabs/nakama-js@2.8.0/dist/nakama-js.cjs.min.js
+"></script>
+
+    <script>
+        // Check if Nakama loaded correctly
+        console.log("Available globals:", Object.keys(window).filter(k => k.toLowerCase().includes('nakama')));
+        
+        let client = null;
+        let socket = null;
+        let session = null;
+        let currentMatch = null;
+        let currentBoard = new Array(81).fill(0);
+        
+        function log(message) {
+            const logs = document.getElementById('logs');
+            const time = new Date().toLocaleTimeString();
+            logs.innerHTML += `[${time}] ${message}\n`;
+            logs.scrollTop = logs.scrollHeight;
+            console.log(message);
+        }
+        
+        function updateStatus(message, className = '') {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${className}`;
+        }
+        
+        function updateButtons(connected = false, inMatch = false) {
+            document.getElementById('connectBtn').disabled = connected;
+            document.getElementById('findMatchBtn').disabled = !connected || inMatch;
+            document.getElementById('leaveMatchBtn').disabled = !inMatch;
+            document.getElementById('testMoveBtn').disabled = !inMatch;
+        }
+        
+        async function connect() {
+            try {
+                log("Connecting to Nakama...");
+                updateStatus("Connecting...", "warning");
+                
+                // Check for Nakama SDK (UMD version)
+                let Nakama = null;
+                if (typeof nakamajs !== 'undefined') {
+                    Nakama = nakamajs;
+                    log("✅ Found nakamajs global");
+                } else if (typeof window.nakamajs !== 'undefined') {
+                    Nakama = window.nakamajs;
+                    log("✅ Found window.nakamajs global");
+                } else {
+                    throw new Error(`Nakama SDK not found. Available globals: ${Object.keys(window).filter(k => k.toLowerCase().includes('nakama')).join(', ')}`);
+                }
+                
+                log(`🔍 Nakama object type: ${typeof Nakama}`);
+                log(`🔍 Nakama keys: ${Object.keys(Nakama).join(', ')}`);
+                
+                // Initialize client
+                client = new Nakama.Client("defaultkey", "localhost", "7350");
+                client.ssl = false;
+                log("✅ Client created successfully");
+                
+                // Authenticate as guest
+                log("Authenticating...");
+                const deviceId = localStorage.getItem('deviceId') || 
+                    'test-device-' + Math.random().toString(36).substr(2, 9);
+                localStorage.setItem('deviceId', deviceId);
+                
+                session = await client.authenticateDevice(deviceId, true);
+                log(`✅ Authenticated as: ${session.username}`);
+                
+                // Test healthcheck RPC
+                try {
+                    log("Testing healthcheck RPC...");
+                    const result = await client.rpc(session, "healthcheck", {});
+                    log(`✅ Healthcheck successful: ${JSON.stringify(result)}`);
+                } catch (error) {
+                    log(`❌ Healthcheck failed: ${error.message}`);
+                    throw new Error("Healthcheck failed - server not responding");
+                }                
+                // Create socket connection
+                log("Creating socket connection...");
+                socket = client.createSocket();
+                
+                // Socket event handlers
+                socket.onconnect = () => {
+                    log("✅ Socket connected");
+                    updateStatus("Connected", "connected");
+                    updateButtons(true, false);
+                };
+                
+                socket.onerror = (error) => {
+                    log(`❌ Socket error: ${error}`);
+                    updateStatus("Socket Error", "error");
+                };
+                
+                socket.onclose = () => {
+                    log("🔌 Socket disconnected");
+                    updateStatus("Disconnected", "");
+                    updateButtons(false, false);
+                };
+                
+                // Match events
+                socket.onmatchdata = (matchData) => {
+                    log(`📨 Match data: ${matchData.data}`);
+                    handleMatchMessage(matchData);
+                };
+                
+                socket.onmatchmakermatched = (matched) => {
+                    log(`🎯 Match found: ${matched.match_id}`);
+                    joinMatch(matched.match_id);
+                };
+                
+                socket.onmatchpresence = (presence) => {
+                    log(`👥 Match presence: ${JSON.stringify(presence)}`);
+                };
+                
+                // Connect socket
+                await socket.connect(session);
+                
+            } catch (error) {
+                log(`❌ Connection failed: ${error.message}`);
+                updateStatus("Connection Failed", "error");
+                console.error(error);
+            }
+        }
+        
+        async function findMatch() {
+            try {
+                log("🔍 Looking for Sudoku match...");
+                updateStatus("Finding match...", "warning");
+                
+                const ticket = await socket.addMatchmaker("*", 1, 2, {
+                    "mode": "sudoku"
+                });
+                
+                log(`🎫 Matchmaker ticket: ${ticket.ticket}`);
+                
+            } catch (error) {
+                log(`❌ Matchmaker error: ${error.message}`);
+                updateStatus("Matchmaker Failed", "error");
+            }
+        }
+        
+        async function joinMatch(matchId) {
+            try {
+                log(`🚪 Joining match: ${matchId}`);
+                currentMatch = await socket.joinMatch(matchId);
+                log(`✅ Joined match successfully`);
+                updateStatus(`In Match: ${matchId.substr(0, 8)}...`, "connected");
+                updateButtons(true, true);
+                
+            } catch (error) {
+                log(`❌ Join match error: ${error.message}`);
+                updateStatus("Join Failed", "error");
+            }
+        }
+        
+        async function leaveMatch() {
+            if (!currentMatch) return;
+            
+            try {
+                log("🚪 Leaving match...");
+                await socket.leaveMatch(currentMatch.match_id);
+                currentMatch = null;
+                updateStatus("Connected", "connected");
+                updateButtons(true, false);
+                clearBoard();
+                
+            } catch (error) {
+                log(`❌ Leave match error: ${error.message}`);
+            }
+        }
+        
+        async function testMove() {
+            if (!currentMatch) return;
+            
+            try {
+                log("🎮 Sending test move...");
+                const moveData = {
+                    index: 0,
+                    num: 5
+                };
+                
+                await socket.sendMatchState(currentMatch.match_id, 1, JSON.stringify(moveData));
+                log(`✅ Move sent: ${JSON.stringify(moveData)}`);
+                
+            } catch (error) {
+                log(`❌ Send move error: ${error.message}`);
+            }
+        }
+        
+        function handleMatchMessage(matchData) {
+            try {
+                const message = JSON.parse(matchData.data);
+                
+                switch (message.type) {
+                    case "match_started":
+                        log(`🚀 Match started with ${message.players} players`);
+                        if (message.initial_board) {
+                            currentBoard = message.initial_board;
+                            renderBoard();
+                        }
+                        break;
+                        
+                    case "player_moved":
+                        log(`👤 Player ${message.player} moved at index ${message.index}`);
+                        break;
+                        
+                    case "match_ended":
+                        log(`🏆 Match ended! Winner: ${message.winner}`);
+                        break;
+                        
+                    case "invalid_move":
+                        log(`❌ Invalid move: ${message.error}`);
+                        break;
+                        
+                    case "error":
+                        log(`⚠️ Game error: ${message.message}`);
+                        break;
+                        
+                    default:
+                        log(`❓ Unknown message type: ${message.type}`);
+                }
+                
+            } catch (error) {
+                log(`❌ Error parsing match message: ${error.message}`);
+            }
+        }
+        
+        function renderBoard() {
+            const boardElement = document.getElementById('gameBoard');
+            boardElement.innerHTML = '';
+            
+            for (let i = 0; i < 81; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                
+                const value = currentBoard[i];
+                if (value > 0) {
+                    cell.textContent = value;
+                    cell.className += ' pre-filled';
+                } else {
+                    cell.textContent = '';
+                }
+                
+                // Make cells clickable for testing
+                cell.onclick = () => {
+                    if (currentMatch && value === 0) {
+                        const num = prompt('Enter number (1-9):');
+                        if (num >= 1 && num <= 9) {
+                            sendMove(i, parseInt(num));
+                        }
+                    }
+                };
+                
+                boardElement.appendChild(cell);
+            }
+        }
+        
+        async function sendMove(index, num) {
+            if (!currentMatch) return;
+            
+            try {
+                const moveData = { index, num };
+                await socket.sendMatchState(currentMatch.match_id, 1, JSON.stringify(moveData));
+                log(`🎮 Move sent: index ${index}, value ${num}`);
+                
+            } catch (error) {
+                log(`❌ Send move error: ${error.message}`);
+            }
+        }
+        
+        function clearBoard() {
+            currentBoard = new Array(81).fill(0);
+            document.getElementById('gameBoard').innerHTML = '';
+        }
+        
+        // Initialize empty board
+        renderBoard();
+        
+        log("💡 Click 'Connect' to start testing");
+        log("💡 After connecting, click 'Find Match' to join a game");
+        log("💡 Open this page in 2 tabs to test multiplayer");
+    </script>
+</body>
+</html>

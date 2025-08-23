@@ -1,22 +1,35 @@
+import * as SudokuMatch from "./match/sudoku-match-handler";
+
 function rpcHealthcheck(
-    ctx: nkruntime.Context,
-    logger: nkruntime.Logger,
-    nk: nkruntime.Nakama,
-    payload: string
-  ): string {
-    logger.info("Healthcheck RPC called");
-    // Return a simple JSON payload to the client
-    return JSON.stringify({ success: true });
-  }
-  
-  function InitModule(
-    ctx: nkruntime.Context,
-    logger: nkruntime.Logger,
-    nk: nkruntime.Nakama,
-    initializer: nkruntime.Initializer
-  ) {
-    // Register the RPC function with the name 'healthcheck'
-    initializer.registerRpc("healthcheck", rpcHealthcheck);
-  
-    logger.info("TypeScript module loaded.");
-  }
+	ctx: nkruntime.Context,
+	logger: nkruntime.Logger,
+	nk: nkruntime.Nakama,
+	payload: string
+): string {
+	logger.info("Healthcheck RPC called");
+	return JSON.stringify({ success: true });
+}
+
+let InitModule: nkruntime.InitModule = function (
+	ctx: nkruntime.Context,
+	logger: nkruntime.Logger,
+	nk: nkruntime.Nakama,
+	initializer: nkruntime.Initializer
+) {
+	// Register healthcheck
+	initializer.registerRpc("healthcheck", rpcHealthcheck);
+	initializer.registerMatchmakerMatched(SudokuMatch.matchmakerMatched);
+
+	initializer.registerMatch("sudoku", {
+		matchInit: SudokuMatch.matchInit,
+		matchJoinAttempt: SudokuMatch.matchJoinAttempt,
+		matchJoin: SudokuMatch.matchJoin,
+		matchLeave: SudokuMatch.matchLeave,
+		matchLoop: SudokuMatch.matchLoop,
+		matchTerminate: SudokuMatch.matchTerminate,
+		matchSignal: SudokuMatch.matchSignal,
+	});
+	logger.info("Nakama Sudoku match handler registered successfully.");
+};
+
+!InitModule && InitModule.bind(null);

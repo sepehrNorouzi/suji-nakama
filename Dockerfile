@@ -9,13 +9,10 @@ RUN apk update && \
 COPY package*.json ./
 RUN npm install
 
-COPY tsconfig.json ./
-COPY src/ ./src/
-
-# Build the TypeScript code
-RUN npx tsc
+COPY . .
+RUN npm run build
 
 FROM registry.heroiclabs.com/heroiclabs/nakama:3.22.0
 
-COPY --from=node-builder /backend/build/*.js /nakama/data/modules/build/
+COPY --from=node-builder /backend/modules/*.js /nakama/data/modules/
 COPY local.yml /nakama/data/
