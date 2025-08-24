@@ -50,3 +50,7 @@ export const MESSAGES = {
 		ERROR: "error",
 	},
 };
+
+export const GAME_CONFIG = {
+	WRONG_MOVE_PENALTY: 5,
+}

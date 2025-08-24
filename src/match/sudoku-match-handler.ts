@@ -3,7 +3,7 @@ import { SudokuValidator } from "../game/sudoku-validator";
 import { DjangoClient } from "../services/server-client";
 import { SudokuMatchState, SudokuPlayerState } from "./sudoku-match-state";
 import { GamePhase } from "../types/enums";
-import { SUDOKU_CONFIG } from "../utils/constants";
+import { GAME_CONFIG, SUDOKU_CONFIG } from "../utils/constants";
 
 import { MESSAGES } from "../utils/constants";
 import { decodeMessage } from "../utils/helpers";
@@ -27,7 +27,7 @@ export function matchInit(
 		match_id: ctx.matchId || "",
 		initial_board: { cells: initialBoard },
 		players: {},
-		phase: GamePhase.WAITING_FOR_PLAYERS,
+		phase: GamePhase.MATCH_ACTIVE,
 		created_at: Date.now(),
 	};
 
@@ -110,6 +110,8 @@ export function matchJoin(
 				},
 				move_count: 0,
 				start_time: Date.now(),
+				wrong_move_cnt: 0,
+				move_banned: null
 			};
 
 			matchState.players[presence.userId] = playerState;
@@ -174,7 +176,6 @@ export function matchLoop(
 	messages: nkruntime.MatchMessage[]
 ): { state: nkruntime.MatchState } | null {
 	const matchState = state as any as SudokuMatchState;
-
 	// Process incoming messages
 	messages.forEach((message) => {
 		switch (message.opCode) {
@@ -184,7 +185,8 @@ export function matchLoop(
 			case ClientOpCodes.COMPLETE: // COMPLETE submission
 				handleCompleteMessage(ctx, logger, nk, dispatcher, matchState, message);
 				break;
-			
+			case ClientOpCodes.MATCH_STATE:
+				handleRequestState(ctx, logger, nk, dispatcher, matchState, message)
 			default:
 				logger.warn(`Unknown message opCode: ${message.opCode}`);
 		}
@@ -265,10 +267,9 @@ export function matchmakerMatched(
     
     try {
 		const initial_board = SudokuGenerator.generate(0.5);
-        const matchId = nk.matchCreate(ctx.matchLabel || "sudoku", {initial_board});
+        const matchId = nk.matchCreate("sudoku", {initial_board});
 		logger.info("INITIAL_BOARD: " + initial_board.toString())
         logger.info("✅ Created Sudoku match for matchmaker: " + matchId);
-        
         return matchId;
     } catch (error) {
         logger.error("❌ Error in matchmaker matched: " + error);
@@ -346,15 +347,33 @@ function handleFillMessage(
 		dispatcher.broadcastMessage(ServerOpCodes.ERROR, JSON.stringify(errorMsg), [message.sender]);
 		return;
 	}
-
+	const datetime = new Date().getTime();
 	const player = matchState.players[message.sender.userId];
 	if (!player) {
 		return;
 	}
+	if (player.move_banned && player.move_banned.getTime() > datetime) {
+		const banned_until = player.move_banned.getTime();
+		const invalidMsg = {
+			type: MESSAGES.SERVER.INVALID_MOVE,
+			error: `You are banned for ${(banned_until - datetime)}`,
+			banned_until: player.move_banned
+		};
 
+		dispatcher.broadcastMessage(ServerOpCodes.INVALID_MOVE, JSON.stringify(invalidMsg), [
+			message.sender,
+		]);
+	}
 	try {
 		const data = decodeMessage(message.data);
+		logger.debug(`RECIED DATA: ${JSON.stringify(data)}`)
+		if (typeof data.index === "undefined" || typeof data.num === "undefined") {
+			logger.error("Invalid message format: missing 'index' or 'num'");
+			return;
+		}
+
 		const { index, num } = data;
+		logger.debug(`RECIEVED DATA index: ${index}, num: ${num}`)
 
 		// Validate move
 		const isValid = SudokuValidator.isValidMove(
@@ -363,13 +382,14 @@ function handleFillMessage(
 			player.private_board.cells,
 			num
 		);
-
+		logger.debug(`After is valid Move, ${isValid}`)
 		if (isValid) {
 			// Apply move
+			logger.debug(`In is_valid condition`)
 			player.private_board.cells[index] = num;
 			player.public_board.cells[index] = SUDOKU_CONFIG.MASK_CELL_VALUE;
-			player.move_count++;
-
+			player.move_count += 1;
+			logger.debug(`After player.move_count += 1`)
 			// Broadcast move to other players
 			const moveMsg = {
 				type: MESSAGES.SERVER.PLAYER_MOVED,
@@ -378,13 +398,21 @@ function handleFillMessage(
 			};
 			dispatcher.broadcastMessage(ServerOpCodes.MOVE_MADE, JSON.stringify(moveMsg));
 		} else {
+			logger.debug(`In not is_valid condition`)
+			const now = new Date();
+			const banned_time = GAME_CONFIG.WRONG_MOVE_PENALTY * (player.wrong_move_cnt || 1);
+			player.wrong_move_cnt += 1;
+			player.move_banned = new Date(now.getTime() + (banned_time * 1000));
 			const invalidMsg = {
 				type: MESSAGES.SERVER.INVALID_MOVE,
 				error: `Move at index ${index} is not valid`,
+				banned_until: player.move_banned
 			};
 			dispatcher.broadcastMessage(ServerOpCodes.INVALID_MOVE, JSON.stringify(invalidMsg), [
 				message.sender,
 			]);
+			logger.debug(`Done`)
+
 		}
 	} catch (error) {
 		logger.error("Error handling fill message:", error);
@@ -475,4 +503,54 @@ async function finishDjangoMatch(
 	} catch (error) {
 		logger.error("Error finishing Django match:", error);
 	}
+}
+
+function handleRequestState(
+	ctx: nkruntime.Context,
+	logger: nkruntime.Logger,
+	nk: nkruntime.Nakama,
+	dispatcher: nkruntime.MatchDispatcher,
+	matchState: SudokuMatchState,
+	message: nkruntime.MatchMessage
+) {
+	logger.info(`Requested Match state from ${message.sender.persistence}`)
+	let m_state = {
+		match_id: matchState.match_id,
+		initial_board: { cells: JSON.parse(JSON.stringify(matchState.initial_board.cells)) },
+		players: {},
+		phase: matchState.phase,
+		match_uuid: matchState.match_uuid,
+	}
+
+	for (const [key, value] of Object.entries(matchState.players)) {
+		if(key == message.sender.userId) {
+			m_state.players[key] = {
+				user_id: value.user_id,
+				profile_name: value.profile_name,
+				move_count: value.move_count,
+				start_time: value.start_time,
+				completion_time: value.completion_time,
+				player_id: value.player_id,
+				move_banned: value.move_banned,
+				wrong_move_cnt: value.wrong_move_cnt,
+				private_board: JSON.parse(JSON.stringify(value.private_board)),
+				public_board: JSON.parse(JSON.stringify(value.public_board)),
+			}
+		}
+		else {
+			m_state.players[key] = {
+				user_id: value.user_id,
+				profile_name: value.profile_name,
+				move_count: value.move_count,
+				start_time: value.start_time,
+				completion_time: value.completion_time,
+				player_id: value.player_id,
+				move_banned: value.move_banned,
+				wrong_move_cnt: value.wrong_move_cnt,
+				public_board: JSON.parse(JSON.stringify(value.public_board)),
+			}
+	 	}
+	}
+
+	dispatcher.broadcastMessage(ServerOpCodes.STATE_ACK, JSON.stringify(m_state), [message.sender]);
 }

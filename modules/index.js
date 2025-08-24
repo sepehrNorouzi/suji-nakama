@@ -155,6 +155,9 @@ var MESSAGES = {
     ERROR: "error"
   }
 };
+var GAME_CONFIG = {
+  WRONG_MOVE_PENALTY: 5
+};
 
 var SudokuGenerator = function () {
   function SudokuGenerator() {}
@@ -488,12 +491,14 @@ var ClientOpCodes;
 (function (ClientOpCodes) {
   ClientOpCodes[ClientOpCodes["FILL"] = 1] = "FILL";
   ClientOpCodes[ClientOpCodes["COMPLETE"] = 2] = "COMPLETE";
+  ClientOpCodes[ClientOpCodes["MATCH_STATE"] = 3] = "MATCH_STATE";
 })(ClientOpCodes || (ClientOpCodes = {}));
 var ServerOpCodes;
 (function (ServerOpCodes) {
   ServerOpCodes[ServerOpCodes["MATCH_STARTED"] = 100] = "MATCH_STARTED";
   ServerOpCodes[ServerOpCodes["MOVE_MADE"] = 101] = "MOVE_MADE";
   ServerOpCodes[ServerOpCodes["MATCH_ENDED"] = 102] = "MATCH_ENDED";
+  ServerOpCodes[ServerOpCodes["STATE_ACK"] = 103] = "STATE_ACK";
   ServerOpCodes[ServerOpCodes["ERROR"] = 500] = "ERROR";
   ServerOpCodes[ServerOpCodes["INVALID_MOVE"] = 501] = "INVALID_MOVE";
 })(ServerOpCodes || (ServerOpCodes = {}));
@@ -508,7 +513,7 @@ function matchInit(ctx, logger, nk, params) {
       cells: initialBoard
     },
     players: {},
-    phase: GamePhase.WAITING_FOR_PLAYERS,
+    phase: GamePhase.MATCH_ACTIVE,
     created_at: Date.now()
   };
   return {
@@ -558,7 +563,9 @@ function matchJoin(ctx, logger, nk, dispatcher, tick, state, presences) {
           cells: __spreadArray([], matchState.initial_board.cells, true)
         },
         move_count: 0,
-        start_time: Date.now()
+        start_time: Date.now(),
+        wrong_move_cnt: 0,
+        move_banned: null
       };
       matchState.players[presence.userId] = playerState;
     }
@@ -603,6 +610,8 @@ function matchLoop(ctx, logger, nk, dispatcher, tick, state, messages) {
       case ClientOpCodes.COMPLETE:
         handleCompleteMessage(ctx, logger, nk, dispatcher, matchState, message);
         break;
+      case ClientOpCodes.MATCH_STATE:
+        handleRequestState(ctx, logger, nk, dispatcher, matchState, message);
       default:
         logger.warn("Unknown message opCode: ".concat(message.opCode));
     }
@@ -649,7 +658,7 @@ function matchmakerMatched(ctx, logger, nk, entries) {
   }
   try {
     var initial_board = SudokuGenerator.generate(0.5);
-    var matchId = nk.matchCreate(ctx.matchLabel || "sudoku", {
+    var matchId = nk.matchCreate("sudoku", {
       initial_board: initial_board
     });
     logger.info("INITIAL_BOARD: " + initial_board.toString());
@@ -722,19 +731,38 @@ function handleFillMessage(ctx, logger, nk, dispatcher, matchState, message) {
     dispatcher.broadcastMessage(ServerOpCodes.ERROR, JSON.stringify(errorMsg), [message.sender]);
     return;
   }
+  var datetime = new Date().getTime();
   var player = matchState.players[message.sender.userId];
   if (!player) {
     return;
   }
+  if (player.move_banned && player.move_banned.getTime() > datetime) {
+    var banned_until = player.move_banned.getTime();
+    var invalidMsg = {
+      type: MESSAGES.SERVER.INVALID_MOVE,
+      error: "You are banned for ".concat(banned_until - datetime),
+      banned_until: player.move_banned
+    };
+    dispatcher.broadcastMessage(ServerOpCodes.INVALID_MOVE, JSON.stringify(invalidMsg), [message.sender]);
+  }
   try {
     var data = decodeMessage(message.data);
+    logger.debug("RECIED DATA: ".concat(JSON.stringify(data)));
+    if (typeof data.index === "undefined" || typeof data.num === "undefined") {
+      logger.error("Invalid message format: missing 'index' or 'num'");
+      return;
+    }
     var index = data.index,
       num = data.num;
+    logger.debug("RECIEVED DATA index: ".concat(index, ", num: ").concat(num));
     var isValid = SudokuValidator.isValidMove(index, matchState.initial_board.cells, player.private_board.cells, num);
+    logger.debug("After is valid Move, ".concat(isValid));
     if (isValid) {
+      logger.debug("In is_valid condition");
       player.private_board.cells[index] = num;
       player.public_board.cells[index] = SUDOKU_CONFIG.MASK_CELL_VALUE;
-      player.move_count++;
+      player.move_count += 1;
+      logger.debug("After player.move_count += 1");
       var moveMsg = {
         type: MESSAGES.SERVER.PLAYER_MOVED,
         player: message.sender.userId,
@@ -742,11 +770,18 @@ function handleFillMessage(ctx, logger, nk, dispatcher, matchState, message) {
       };
       dispatcher.broadcastMessage(ServerOpCodes.MOVE_MADE, JSON.stringify(moveMsg));
     } else {
+      logger.debug("In not is_valid condition");
+      var now = new Date();
+      var banned_time = GAME_CONFIG.WRONG_MOVE_PENALTY * (player.wrong_move_cnt || 1);
+      player.wrong_move_cnt += 1;
+      player.move_banned = new Date(now.getTime() + banned_time * 1000);
       var invalidMsg = {
         type: MESSAGES.SERVER.INVALID_MOVE,
-        error: "Move at index ".concat(index, " is not valid")
+        error: "Move at index ".concat(index, " is not valid"),
+        banned_until: player.move_banned
       };
       dispatcher.broadcastMessage(ServerOpCodes.INVALID_MOVE, JSON.stringify(invalidMsg), [message.sender]);
+      logger.debug("Done");
     }
   } catch (error) {
     logger.error("Error handling fill message:", error);
@@ -812,6 +847,50 @@ function finishDjangoMatch(ctx, logger, nk, matchState) {
     });
   });
 }
+function handleRequestState(ctx, logger, nk, dispatcher, matchState, message) {
+  logger.info("Requested Match state from ".concat(message.sender.persistence));
+  var m_state = {
+    match_id: matchState.match_id,
+    initial_board: {
+      cells: JSON.parse(JSON.stringify(matchState.initial_board.cells))
+    },
+    players: {},
+    phase: matchState.phase,
+    match_uuid: matchState.match_uuid
+  };
+  for (var _i = 0, _a = Object.entries(matchState.players); _i < _a.length; _i++) {
+    var _b = _a[_i],
+      key = _b[0],
+      value = _b[1];
+    if (key == message.sender.userId) {
+      m_state.players[key] = {
+        user_id: value.user_id,
+        profile_name: value.profile_name,
+        move_count: value.move_count,
+        start_time: value.start_time,
+        completion_time: value.completion_time,
+        player_id: value.player_id,
+        move_banned: value.move_banned,
+        wrong_move_cnt: value.wrong_move_cnt,
+        private_board: JSON.parse(JSON.stringify(value.private_board)),
+        public_board: JSON.parse(JSON.stringify(value.public_board))
+      };
+    } else {
+      m_state.players[key] = {
+        user_id: value.user_id,
+        profile_name: value.profile_name,
+        move_count: value.move_count,
+        start_time: value.start_time,
+        completion_time: value.completion_time,
+        player_id: value.player_id,
+        move_banned: value.move_banned,
+        wrong_move_cnt: value.wrong_move_cnt,
+        public_board: JSON.parse(JSON.stringify(value.public_board))
+      };
+    }
+  }
+  dispatcher.broadcastMessage(ServerOpCodes.STATE_ACK, JSON.stringify(m_state), [message.sender]);
+}
 
 function rpcHealthcheck(ctx, logger, nk, payload) {
   logger.info("Healthcheck RPC called");
@@ -821,7 +900,6 @@ function rpcHealthcheck(ctx, logger, nk, payload) {
 }
 var InitModule = function InitModule(ctx, logger, nk, initializer) {
   initializer.registerRpc("healthcheck", rpcHealthcheck);
-  initializer.registerMatchmakerMatched(matchmakerMatched);
   initializer.registerMatch("sudoku", {
     matchInit: matchInit,
     matchJoinAttempt: matchJoinAttempt,
@@ -831,6 +909,7 @@ var InitModule = function InitModule(ctx, logger, nk, initializer) {
     matchTerminate: matchTerminate,
     matchSignal: matchSignal
   });
+  initializer.registerMatchmakerMatched(matchmakerMatched);
   logger.info("Nakama Sudoku match handler registered successfully.");
 };
 !InitModule && InitModule.bind(null);

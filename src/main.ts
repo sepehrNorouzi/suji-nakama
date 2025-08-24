@@ -18,7 +18,6 @@ let InitModule: nkruntime.InitModule = function (
 ) {
 	// Register healthcheck
 	initializer.registerRpc("healthcheck", rpcHealthcheck);
-	initializer.registerMatchmakerMatched(SudokuMatch.matchmakerMatched);
 
 	initializer.registerMatch("sudoku", {
 		matchInit: SudokuMatch.matchInit,
@@ -29,6 +28,8 @@ let InitModule: nkruntime.InitModule = function (
 		matchTerminate: SudokuMatch.matchTerminate,
 		matchSignal: SudokuMatch.matchSignal,
 	});
+	initializer.registerMatchmakerMatched(SudokuMatch.matchmakerMatched);
+
 	logger.info("Nakama Sudoku match handler registered successfully.");
 };
 
