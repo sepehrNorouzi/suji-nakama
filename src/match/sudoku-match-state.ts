@@ -22,6 +22,6 @@ export interface SudokuPlayerState {
   start_time: number;
   completion_time?: number;
   player_id?: number;
-  move_banned?: Date;
+  move_banned?: number;
   wrong_move_cnt?: number;
 }

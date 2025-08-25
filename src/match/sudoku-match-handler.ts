@@ -189,6 +189,7 @@ export function matchLoop(
 				handleRequestState(ctx, logger, nk, dispatcher, matchState, message)
 			default:
 				logger.warn(`Unknown message opCode: ${message.opCode}`);
+				break
 		}
 	});
 
@@ -352,20 +353,30 @@ function handleFillMessage(
 	if (!player) {
 		return;
 	}
-	if (player.move_banned && player.move_banned.getTime() > datetime) {
-		const banned_until = player.move_banned.getTime();
-		const invalidMsg = {
-			type: MESSAGES.SERVER.INVALID_MOVE,
-			error: `You are banned for ${(banned_until - datetime)}`,
-			banned_until: player.move_banned
-		};
-
-		dispatcher.broadcastMessage(ServerOpCodes.INVALID_MOVE, JSON.stringify(invalidMsg), [
-			message.sender,
-		]);
+	if (player.move_banned) {
+		// logger.debug("HERE IS THE SHIT: " + typeof player.move_banned)
+		logger.debug("HERE IS THE Othershit: " +  Object.keys(player.move_banned).join(', '))
+		logger.debug("HERE IS THE Banned: " +  player.move_banned)
+		const banned_until = player.move_banned;
+		logger.debug("HERE IS THE BANNED UNTIL: " +  banned_until)
+		if(banned_until > datetime) {
+			const invalidMsg = {
+				type: MESSAGES.SERVER.INVALID_MOVE,
+				error: `You are banned for ${(banned_until - datetime)}`,
+				banned_until: player.move_banned
+			};
+	
+			dispatcher.broadcastMessage(ServerOpCodes.INVALID_MOVE, JSON.stringify(invalidMsg), [
+				message.sender,
+			]);
+			return
+		}
 	}
 	try {
-		const data = decodeMessage(message.data);
+		logger.debug(`RECIED DATA in HANDLE FILL : ${message.data}`)
+		// const data = decodeMessage(message.data);
+		const str_data = nk.binaryToString(message.data);
+		const data = JSON.parse(str_data);
 		logger.debug(`RECIED DATA: ${JSON.stringify(data)}`)
 		if (typeof data.index === "undefined" || typeof data.num === "undefined") {
 			logger.error("Invalid message format: missing 'index' or 'num'");
@@ -399,10 +410,10 @@ function handleFillMessage(
 			dispatcher.broadcastMessage(ServerOpCodes.MOVE_MADE, JSON.stringify(moveMsg));
 		} else {
 			logger.debug(`In not is_valid condition`)
-			const now = new Date();
+			const now = new Date().getTime();
 			const banned_time = GAME_CONFIG.WRONG_MOVE_PENALTY * (player.wrong_move_cnt || 1);
 			player.wrong_move_cnt += 1;
-			player.move_banned = new Date(now.getTime() + (banned_time * 1000));
+			player.move_banned = now + (banned_time * 1000);
 			const invalidMsg = {
 				type: MESSAGES.SERVER.INVALID_MOVE,
 				error: `Move at index ${index} is not valid`,
