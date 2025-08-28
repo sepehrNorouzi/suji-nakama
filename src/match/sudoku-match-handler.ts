@@ -1,14 +1,14 @@
 import { SudokuGenerator } from "../game/sudoku-generator";
 import { SudokuValidator } from "../game/sudoku-validator";
-import { DjangoClient } from "../services/server-client";
+import { DjangoClient, server_clien } from "../services/server-client";
 import { SudokuMatchState, SudokuPlayerState } from "./sudoku-match-state";
 import { GamePhase } from "../types/enums";
 import { GAME_CONFIG, SUDOKU_CONFIG } from "../utils/constants";
 
 import { MESSAGES } from "../utils/constants";
-import { decodeMessage } from "../utils/helpers";
 import { PlayerGameState } from "../types/interfaces";
 import { ClientOpCodes, ServerOpCodes } from "./op-codes";
+import { StorageUtils } from "../utils/storage-util";
 
 export function matchInit(
 	ctx: nkruntime.Context,
@@ -22,19 +22,45 @@ export function matchInit(
 		parseFloat(params.difficulty) || SUDOKU_CONFIG.DEFAULT_DIFFICULTY;
 	const initialBoard = SudokuGenerator.generate(difficulty);
 
-	// Initialize match state
+	const body = {
+		event: "game_started",
+		event_id: nk.uuidv4(),
+		match_id: ctx.matchId,
+		region: "global",
+		players: [],
+		initial_board_hash: nk.sha256Hash(params.initial_board),
+		ts: new Date().toISOString(),
+	};
+
+	const url = ctx.env["PUBLISHER_URL"];
+	const token = ctx.env["PUBLISHER_AUTH_TOKEN"];
+
+	logger.debug(`URL: ${url}`);
+	logger.debug(`TOKEN: ${token}`);
+
+
 	const state: SudokuMatchState = {
 		match_id: ctx.matchId || "",
 		initial_board: { cells: initialBoard },
 		players: {},
-		phase: GamePhase.MATCH_ACTIVE,
+		phase: GamePhase.WAITING_FOR_PLAYERS,
 		created_at: Date.now(),
 	};
+
+	const res = nk.httpRequest(
+		url + "/v1/events/game-started",
+		'post',
+		{ "Content-Type": "application/json", "Authorization": "Bearer " + token, "X-Idempotency-Key": body.event_id },
+		JSON.stringify(body),
+		0.5
+	  );
+
+	StorageUtils.writeGameState(nk, ctx.matchId, state, ctx.userId);
 
 	return {
 		state: state as nkruntime.MatchState,
 		tickRate: 10,
-		label: "Sudoku Match",
+		label: "sudoko",
 	};
 }
 
@@ -56,7 +82,6 @@ export function matchJoinAttempt(
 
 	const matchState = state as any as SudokuMatchState;
 
-	// Check if match is full
 	const playerCount = Object.keys(matchState.players).length;
 	if (playerCount >= SUDOKU_CONFIG.DEFAULT_MAX_PLAYERS) {
 		return {
@@ -66,7 +91,6 @@ export function matchJoinAttempt(
 		};
 	}
 
-	// Check if already in match
 	if (matchState.players[presence.userId]) {
 		return {
 			state: state,
@@ -123,6 +147,8 @@ export function matchJoin(
 		playerCount >= SUDOKU_CONFIG.DEFAULT_MAX_PLAYERS &&
 		matchState.phase === GamePhase.WAITING_FOR_PLAYERS
 	) {
+		logger.debug("WE ARE HERE")
+		matchState.phase = GamePhase.MATCH_ACTIVE;
 		startMatch(ctx, logger, nk, dispatcher, matchState);
 	}
 
@@ -315,8 +341,7 @@ async function startMatch(
 		logger.error("Error creating Django match:", error);
 	}
 
-	matchState.phase = GamePhase.MATCH_ACTIVE;
-	const startTime = Date.now();
+	const startTime = new Date().getTime();
 	Object.values(matchState.players).forEach((player) => {
 		player.start_time = startTime;
 	});
@@ -442,7 +467,7 @@ function handleCompleteMessage(
 	if (!player) return;
 
 	try {
-		const data = decodeMessage(message.data);
+		const data = JSON.parse(nk.binaryToString(message.data));
 		const { solution } = data;
 
 		if (SudokuValidator.isValidSolution(solution)) {

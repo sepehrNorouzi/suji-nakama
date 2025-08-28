@@ -118,3 +118,5 @@ export class DjangoClient {
     }
   }
 }
+
+export const server_clien = new DjangoClient()

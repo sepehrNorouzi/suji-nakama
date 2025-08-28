@@ -1,0 +1,6 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35
+aio-pika==9.5.7
+pydantic==2.11.7
+prometheus-client==0.22.1
+pydantic-settings==2.10.1

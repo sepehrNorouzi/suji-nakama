@@ -15,5 +15,9 @@ console:
   signing_key: "replace_with_random_string"
   max_message_size_bytes: 409600
 
+
 runtime:
+  env: 
+    - "PUBLISHER_URL=${PUBLISHER_URL}"
+    - "PUBLISHER_AUTH_TOKEN=${PUBLISHER_AUTH_TOKEN}"
   js_entrypoint: "./index.js"

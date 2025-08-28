@@ -4,8 +4,8 @@ services:
     container_name: postgres
     image: postgres:12.2-alpine
     environment:
-      - POSTGRES_DB=nakama
-      - POSTGRES_PASSWORD=123456
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     volumes:
       - data:/var/lib/postgresql/data
     expose:
@@ -19,6 +19,46 @@ services:
       interval: 3s
       timeout: 3s
       retries: 5
+
+  rabbitmq:
+    container_name: rabbitmq
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-game}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS:-gamepass}
+      - RABBITMQ_DEFAULT_VHOST=${RABBITMQ_VHOST:-/game}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  publisher:
+    container_name: publisher
+    build: ./publisher
+    environment:
+      - PORT=8080
+      - RABBIT_URL=amqp://${RABBITMQ_USER:-game}:${RABBITMQ_PASS:-gamepass}@rabbitmq:5672/%2Fgame?heartbeat=10
+      - EXCHANGE=game.events
+      - AUTH_TOKEN=${PUBLISHER_AUTH_TOKEN:-changeme}
+      - INBUF_CAPACITY=10000
+      - READINESS_MAX_BACKLOG=8000
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "8088:8080"
+    
   nakama:
     container_name: nakama
     build: .
@@ -34,6 +74,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+        
+    environment:
+      - PUBLISHER_AUTH_TOKEN=${PUBLISHER_AUTH_TOKEN:-changeme}
+      - PUBLISHER_URL=http://publisher:8080
+
     volumes:
       - ./:/nakama/data
     ports:
@@ -47,4 +92,4 @@ services:
       retries: 5
 volumes:
   data:
-  
+  rabbitmq_data:

@@ -142,6 +142,11 @@ var SERVER_CONFIG = {
     CREATE_MATCH: "/api/match/create/",
     FINISH_MATCH: "/api/match/{uuid}/finish/"}
 };
+var STORAGE_KEYS = {
+  GAME_PREFIX: "sudoku_game:",
+  PLAYER_PREFIX: "sudoku_player:",
+  MATCH_PREFIX: "sudoku_match:"
+};
 var MESSAGES = {
   CLIENT: {
     FILL: "fill",
@@ -481,12 +486,6 @@ var GameResult;
   GameResult["DRAW"] = "draw";
 })(GameResult || (GameResult = {}));
 
-function decodeMessage(data) {
-  var decoder = new TextDecoder();
-  var messageText = decoder.decode(data);
-  return JSON.parse(messageText);
-}
-
 var ClientOpCodes;
 (function (ClientOpCodes) {
   ClientOpCodes[ClientOpCodes["FILL"] = 1] = "FILL";
@@ -503,6 +502,43 @@ var ServerOpCodes;
   ServerOpCodes[ServerOpCodes["INVALID_MOVE"] = 501] = "INVALID_MOVE";
 })(ServerOpCodes || (ServerOpCodes = {}));
 
+var StorageUtils = function () {
+  function StorageUtils() {}
+  StorageUtils.getGameKey = function (gameId) {
+    return "".concat(STORAGE_KEYS.GAME_PREFIX).concat(gameId);
+  };
+  StorageUtils.getPlayerKey = function (gameId, sessionId) {
+    return "".concat(STORAGE_KEYS.PLAYER_PREFIX).concat(gameId, ":").concat(sessionId);
+  };
+  StorageUtils.getMatchKey = function (matchUuid) {
+    return "".concat(STORAGE_KEYS.MATCH_PREFIX).concat(matchUuid);
+  };
+  StorageUtils.writeGameState = function (nk, gameId, gameState, userId) {
+    nk.storageWrite([{
+      collection: "sudoku_games",
+      key: StorageUtils.getGameKey(gameId),
+      value: gameState,
+      userId: userId
+    }]);
+  };
+  StorageUtils.readGameState = function (nk, gameId, userId) {
+    var data = nk.storageRead([{
+      collection: "sudoku_games",
+      key: StorageUtils.getGameKey(gameId),
+      userId: userId
+    }]);
+    return data.length > 0 ? data[0].value : null;
+  };
+  StorageUtils.deleteGameState = function (nk, gameId, userId) {
+    nk.storageDelete([{
+      collection: "sudoku_games",
+      key: StorageUtils.getGameKey(gameId),
+      userId: userId
+    }]);
+  };
+  return StorageUtils;
+}();
+
 function matchInit(ctx, logger, nk, params) {
   logger.info("Initializing Sudoku match");
   var difficulty = parseFloat(params.difficulty) || SUDOKU_CONFIG.DEFAULT_DIFFICULTY;
@@ -513,13 +549,14 @@ function matchInit(ctx, logger, nk, params) {
       cells: initialBoard
     },
     players: {},
-    phase: GamePhase.MATCH_ACTIVE,
+    phase: GamePhase.WAITING_FOR_PLAYERS,
     created_at: Date.now()
   };
+  StorageUtils.writeGameState(nk, ctx.matchId, state, ctx.userId);
   return {
     state: state,
     tickRate: 10,
-    label: "Sudoku Match"
+    label: "sudoko"
   };
 }
 function matchJoinAttempt(ctx, logger, nk, dispatcher, tick, state, presence, metadata) {
@@ -572,6 +609,7 @@ function matchJoin(ctx, logger, nk, dispatcher, tick, state, presences) {
   });
   var playerCount = Object.keys(matchState.players).length;
   if (playerCount >= SUDOKU_CONFIG.DEFAULT_MAX_PLAYERS && matchState.phase === GamePhase.WAITING_FOR_PLAYERS) {
+    logger.debug("WE ARE HERE");
     startMatch(ctx, logger, nk, dispatcher, matchState);
   }
   return {
@@ -800,7 +838,7 @@ function handleCompleteMessage(ctx, logger, nk, dispatcher, matchState, message)
   var player = matchState.players[message.sender.userId];
   if (!player) return;
   try {
-    var data = decodeMessage(message.data);
+    var data = JSON.parse(nk.binaryToString(message.data));
     var solution = data.solution;
     if (SudokuValidator.isValidSolution(solution)) {
       player.private_board.cells = solution;
