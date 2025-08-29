@@ -18,6 +18,6 @@ console:
 
 runtime:
   env: 
-    - "PUBLISHER_URL=${PUBLISHER_URL}"
-    - "PUBLISHER_AUTH_TOKEN=${PUBLISHER_AUTH_TOKEN}"
+    - "PUBLISHER_URL=http://publisher:8080"
+    - "PUBLISHER_AUTH_TOKEN=publisher_token"
   js_entrypoint: "./index.js"

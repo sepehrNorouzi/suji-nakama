@@ -1,310 +1,14 @@
-import { SudokuGenerator } from "../game/sudoku-generator";
 import { SudokuValidator } from "../game/sudoku-validator";
-import { DjangoClient, server_clien } from "../services/server-client";
-import { SudokuMatchState, SudokuPlayerState } from "./sudoku-match-state";
+import { DjangoClient } from "../services/server-client";
+import { SudokuMatchState } from "./sudoku-match-state";
 import { GamePhase } from "../types/enums";
 import { GAME_CONFIG, SUDOKU_CONFIG } from "../utils/constants";
 
 import { MESSAGES } from "../utils/constants";
 import { PlayerGameState } from "../types/interfaces";
-import { ClientOpCodes, ServerOpCodes } from "./op-codes";
-import { StorageUtils } from "../utils/storage-util";
+import { ServerOpCodes } from "./op-codes";
 
-export function matchInit(
-	ctx: nkruntime.Context,
-	logger: nkruntime.Logger,
-	nk: nkruntime.Nakama,
-	params: { [key: string]: string }
-): { state: nkruntime.MatchState; tickRate: number; label: string } {
-	logger.info("Initializing Sudoku match");
-
-	const difficulty =
-		parseFloat(params.difficulty) || SUDOKU_CONFIG.DEFAULT_DIFFICULTY;
-	const initialBoard = SudokuGenerator.generate(difficulty);
-
-	const body = {
-		event: "game_started",
-		event_id: nk.uuidv4(),
-		match_id: ctx.matchId,
-		region: "global",
-		players: [],
-		initial_board_hash: nk.sha256Hash(params.initial_board),
-		ts: new Date().toISOString(),
-	};
-
-	const url = ctx.env["PUBLISHER_URL"];
-	const token = ctx.env["PUBLISHER_AUTH_TOKEN"];
-
-	logger.debug(`URL: ${url}`);
-	logger.debug(`TOKEN: ${token}`);
-
-
-	const state: SudokuMatchState = {
-		match_id: ctx.matchId || "",
-		initial_board: { cells: initialBoard },
-		players: {},
-		phase: GamePhase.WAITING_FOR_PLAYERS,
-		created_at: Date.now(),
-	};
-
-	const res = nk.httpRequest(
-		url + "/v1/events/game-started",
-		'post',
-		{ "Content-Type": "application/json", "Authorization": "Bearer " + token, "X-Idempotency-Key": body.event_id },
-		JSON.stringify(body),
-		0.5
-	  );
-
-	StorageUtils.writeGameState(nk, ctx.matchId, state, ctx.userId);
-
-	return {
-		state: state as nkruntime.MatchState,
-		tickRate: 10,
-		label: "sudoko",
-	};
-}
-
-export function matchJoinAttempt(
-	ctx: nkruntime.Context,
-	logger: nkruntime.Logger,
-	nk: nkruntime.Nakama,
-	dispatcher: nkruntime.MatchDispatcher,
-	tick: number,
-	state: nkruntime.MatchState,
-	presence: nkruntime.Presence,
-	metadata: { [key: string]: any }
-): {
-	state: nkruntime.MatchState;
-	accept: boolean;
-	rejectMessage?: string;
-} | null {
-	logger.info(`Player ${presence.userId} attempting to join match`);
-
-	const matchState = state as any as SudokuMatchState;
-
-	const playerCount = Object.keys(matchState.players).length;
-	if (playerCount >= SUDOKU_CONFIG.DEFAULT_MAX_PLAYERS) {
-		return {
-			state: state,
-			accept: false,
-			rejectMessage: "Match is full",
-		};
-	}
-
-	if (matchState.players[presence.userId]) {
-		return {
-			state: state,
-			accept: false,
-			rejectMessage: "Already in match",
-		};
-	}
-
-	return {
-		state: state,
-		accept: true,
-	};
-}
-
-export function matchJoin(
-	ctx: nkruntime.Context,
-	logger: nkruntime.Logger,
-	nk: nkruntime.Nakama,
-	dispatcher: nkruntime.MatchDispatcher,
-	tick: number,
-	state: nkruntime.MatchState,
-	presences: nkruntime.Presence[]
-): { state: nkruntime.MatchState } | null {
-	logger.info(
-		`Players joined match: ${presences.map((p) => p.userId).join(", ")}`
-	);
-
-	const matchState = state as any as SudokuMatchState;
-
-	// Add new players
-	presences.forEach((presence) => {
-		if (!matchState.players[presence.userId]) {
-			const playerState: SudokuPlayerState = {
-				user_id: presence.userId,
-				profile_name:
-					presence.username || `Player_${presence.userId.slice(-4)}`,
-				avatar: "",
-				private_board: { cells: [...matchState.initial_board.cells] },
-				public_board: {
-					cells: [...matchState.initial_board.cells],
-				},
-				move_count: 0,
-				start_time: Date.now(),
-				wrong_move_cnt: 0,
-				move_banned: null
-			};
-
-			matchState.players[presence.userId] = playerState;
-		}
-	});
-
-	const playerCount = Object.keys(matchState.players).length;
-	if (
-		playerCount >= SUDOKU_CONFIG.DEFAULT_MAX_PLAYERS &&
-		matchState.phase === GamePhase.WAITING_FOR_PLAYERS
-	) {
-		logger.debug("WE ARE HERE")
-		matchState.phase = GamePhase.MATCH_ACTIVE;
-		startMatch(ctx, logger, nk, dispatcher, matchState);
-	}
-
-	return { state: matchState as nkruntime.MatchState };
-}
-
-export function matchLeave(
-	ctx: nkruntime.Context,
-	logger: nkruntime.Logger,
-	nk: nkruntime.Nakama,
-	dispatcher: nkruntime.MatchDispatcher,
-	tick: number,
-	state: nkruntime.MatchState,
-	presences: nkruntime.Presence[]
-): { state: nkruntime.MatchState } | null {
-	logger.info(
-		`Players left match: ${presences.map((p) => p.userId).join(", ")}`
-	);
-
-	const matchState = state as any as SudokuMatchState;
-
-	if (matchState.phase === GamePhase.MATCH_ACTIVE) {
-		presences.forEach((presence) => {
-			if (matchState.players[presence.userId]) {
-				logger.info(`Player ${presence.userId} forfeited by leaving`);
-				// Could set their completion time to a penalty or mark as forfeit
-			}
-		});
-	}
-
-	// Remove players from state
-	presences.forEach((presence) => {
-		delete matchState.players[presence.userId];
-	});
-
-	// If no players left, match should end
-	if (Object.keys(matchState.players).length === 0) {
-		return null; // This will terminate the match
-	}
-
-	return { state: matchState as nkruntime.MatchState };
-}
-
-export function matchLoop(
-	ctx: nkruntime.Context,
-	logger: nkruntime.Logger,
-	nk: nkruntime.Nakama,
-	dispatcher: nkruntime.MatchDispatcher,
-	tick: number,
-	state: nkruntime.MatchState,
-	messages: nkruntime.MatchMessage[]
-): { state: nkruntime.MatchState } | null {
-	const matchState = state as any as SudokuMatchState;
-	// Process incoming messages
-	messages.forEach((message) => {
-		switch (message.opCode) {
-			case ClientOpCodes.FILL:
-				handleFillMessage(ctx, logger, nk, dispatcher, matchState, message);
-				break;
-			case ClientOpCodes.COMPLETE: // COMPLETE submission
-				handleCompleteMessage(ctx, logger, nk, dispatcher, matchState, message);
-				break;
-			case ClientOpCodes.MATCH_STATE:
-				handleRequestState(ctx, logger, nk, dispatcher, matchState, message)
-			default:
-				logger.warn(`Unknown message opCode: ${message.opCode}`);
-				break
-		}
-	});
-
-	return { state: matchState as nkruntime.MatchState };
-}
-
-export function matchTerminate(
-	ctx: nkruntime.Context,
-	logger: nkruntime.Logger,
-	nk: nkruntime.Nakama,
-	dispatcher: nkruntime.MatchDispatcher,
-	tick: number,
-	state: nkruntime.MatchState,
-	graceSeconds: number
-): { state: nkruntime.MatchState } | null {
-	logger.info("Match terminating");
-
-	const matchState = state as any as SudokuMatchState;
-
-	// Send final results to Django if match was active
-	if (matchState.match_uuid) {
-		finishDjangoMatch(ctx, logger, nk, matchState);
-	}
-
-	return null;
-}
-
-export function matchSignal(
-    ctx: nkruntime.Context,
-    logger: nkruntime.Logger,
-    nk: nkruntime.Nakama,
-    dispatcher: nkruntime.MatchDispatcher,
-    tick: number,
-    state: nkruntime.MatchState,
-    data: string
-  ): { state: nkruntime.MatchState } | null {
-    logger.info("Match signal received");
-    
-    const matchState = state as any as SudokuMatchState;
-    
-    try {
-      const signalData = JSON.parse(data);
-      
-      switch (signalData.type) {
-        case "pause_match":
-          // Handle pause logic if needed
-          logger.info("Match pause signal received");
-          break;
-        case "resume_match":
-          // Handle resume logic if needed
-          logger.info("Match resume signal received");
-          break;
-        default:
-          logger.warn(`Unknown signal type: ${signalData.type}`);
-      }
-      
-    } catch (error) {
-      logger.error("Error handling match signal:", error);
-    }
-    
-    return { state: matchState as nkruntime.MatchState };
-}
-
-
-export function matchmakerMatched(
-    ctx: nkruntime.Context,
-    logger: nkruntime.Logger,
-    nk: nkruntime.Nakama,
-    entries: nkruntime.MatchmakerResult[]
-): string {
-    logger.info("🎯 MATCHMAKER MATCHED! Creating Sudoku match...");
-    logger.info("👥 Matched " + entries.length + " players");
-    for (var i = 0; i < entries.length; i++) {
-        logger.info("   Player " + (i + 1) + ": " + entries[i].presence.username);
-    }
-    
-    try {
-		const initial_board = SudokuGenerator.generate(0.5);
-        const matchId = nk.matchCreate("sudoku", {initial_board});
-		logger.info("INITIAL_BOARD: " + initial_board.toString())
-        logger.info("✅ Created Sudoku match for matchmaker: " + matchId);
-        return matchId;
-    } catch (error) {
-        logger.error("❌ Error in matchmaker matched: " + error);
-        return "";
-    }
-}
-
-async function startMatch(
+export async function startMatch(
 	ctx: nkruntime.Context,
 	logger: nkruntime.Logger,
 	nk: nkruntime.Nakama,
@@ -312,33 +16,50 @@ async function startMatch(
 	matchState: SudokuMatchState
 ): Promise<void> {
 	logger.info("Starting Sudoku match");
+	
 
 	try {
-		// Create Django match
-		const djangoClient = new DjangoClient();
-		const matchType = await djangoClient.getMatchType();
+		const initialBoardCells = matchState.initial_board.cells;
+    if (!Array.isArray(initialBoardCells) || initialBoardCells.length === 0) {
+      logger.error("Invalid initial board data:", initialBoardCells);
+      return;
+    }
 
-		if (matchType) {
-			// Get player IDs (would need proper mapping from Nakama user to Django player)
-			const playerIds = Object.values(matchState.players)
-				.map((p) => p.player_id || -1)
-				.filter((id) => id && id > 0);
+    const body = {
+      event: "game_started",
+      event_id: nk.uuidv4(),
+      match_id: ctx.matchId,
+      region: "global",
+      players: [],
+      initial_board_hash: nk.sha256Hash(initialBoardCells.join(',')),
+      ts: Date.now(),
+    };
 
-			if (playerIds.length === Object.keys(matchState.players).length) {
-				const djangoMatch = await djangoClient.createMatch(
-					playerIds,
-					matchType.id,
-					matchState.match_id
-				);
-				if (djangoMatch) {
-					matchState.match_uuid = djangoMatch.uuid;
-					matchState.match_type_id = matchType.id;
-					logger.info(`Django match created: ${djangoMatch.uuid}`);
-				}
-			}
-		}
+    const url = ctx.env["PUBLISHER_URL"];
+    const token = ctx.env["PUBLISHER_AUTH_TOKEN"];
+
+    logger.debug(`[MATCHJOIN.STARTMATCH] URL: ${url}`);
+    logger.debug(`[MATCHJOIN.STARTMATCH] TOKEN: ${token}`);
+
+    // HTTP request to the publisher
+    const res = nk.httpRequest(
+      url + "/v1/events/game-started",
+      'post',
+      {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token,
+        "X-Idempotency-Key": body.event_id
+      },
+      JSON.stringify(body),
+      5000
+    );
+
+    // Log the response from the HTTP request
+    logger.debug(`[MATCHJOIN.STARTMATCH] Response: ${JSON.stringify(res)}`);		
+	
 	} catch (error) {
-		logger.error("Error creating Django match:", error);
+		logger.error("Error creating Django match:", error.message || error);
+		logger.error("Error creating Django match:", error.stack);
 	}
 
 	const startTime = new Date().getTime();
@@ -356,7 +77,7 @@ async function startMatch(
 	dispatcher.broadcastMessage(ServerOpCodes.MATCH_STARTED, JSON.stringify(message));
 }
 
-function handleFillMessage(
+export function handleFillMessage(
 	ctx: nkruntime.Context,
 	logger: nkruntime.Logger,
 	nk: nkruntime.Nakama,
@@ -455,7 +176,7 @@ function handleFillMessage(
 	}
 }
 
-function handleCompleteMessage(
+export function handleCompleteMessage(
 	ctx: nkruntime.Context,
 	logger: nkruntime.Logger,
 	nk: nkruntime.Nakama,
@@ -487,7 +208,7 @@ function handleCompleteMessage(
 	}
 }
 
-function handleGameCompletion(
+export function handleGameCompletion(
 	ctx: nkruntime.Context,
 	logger: nkruntime.Logger,
 	nk: nkruntime.Nakama,
@@ -511,7 +232,7 @@ function handleGameCompletion(
 	finishDjangoMatch(ctx, logger, nk, matchState);
 }
 
-async function finishDjangoMatch(
+export async function finishDjangoMatch(
 	ctx: nkruntime.Context,
 	logger: nkruntime.Logger,
 	nk: nkruntime.Nakama,
@@ -541,7 +262,7 @@ async function finishDjangoMatch(
 	}
 }
 
-function handleRequestState(
+export function handleRequestState(
 	ctx: nkruntime.Context,
 	logger: nkruntime.Logger,
 	nk: nkruntime.Nakama,

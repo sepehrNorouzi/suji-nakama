@@ -610,6 +610,7 @@ function matchJoin(ctx, logger, nk, dispatcher, tick, state, presences) {
   var playerCount = Object.keys(matchState.players).length;
   if (playerCount >= SUDOKU_CONFIG.DEFAULT_MAX_PLAYERS && matchState.phase === GamePhase.WAITING_FOR_PLAYERS) {
     logger.debug("WE ARE HERE");
+    matchState.phase = GamePhase.MATCH_ACTIVE;
     startMatch(ctx, logger, nk, dispatcher, matchState);
   }
   return {
@@ -710,54 +711,50 @@ function matchmakerMatched(ctx, logger, nk, entries) {
 }
 function startMatch(ctx, logger, nk, dispatcher, matchState) {
   return __awaiter(this, void 0, void 0, function () {
-    var djangoClient, matchType, playerIds, djangoMatch, error_1, startTime, message;
+    var initialBoardCells, body, url, token, res, startTime, message;
     return __generator(this, function (_a) {
-      switch (_a.label) {
-        case 0:
-          logger.info("Starting Sudoku match");
-          _a.label = 1;
-        case 1:
-          _a.trys.push([1, 5,, 6]);
-          djangoClient = new DjangoClient();
-          return [4, djangoClient.getMatchType()];
-        case 2:
-          matchType = _a.sent();
-          if (!matchType) return [3, 4];
-          playerIds = Object.values(matchState.players).map(function (p) {
-            return p.player_id || -1;
-          }).filter(function (id) {
-            return id && id > 0;
-          });
-          if (!(playerIds.length === Object.keys(matchState.players).length)) return [3, 4];
-          return [4, djangoClient.createMatch(playerIds, matchType.id, matchState.match_id)];
-        case 3:
-          djangoMatch = _a.sent();
-          if (djangoMatch) {
-            matchState.match_uuid = djangoMatch.uuid;
-            matchState.match_type_id = matchType.id;
-            logger.info("Django match created: ".concat(djangoMatch.uuid));
-          }
-          _a.label = 4;
-        case 4:
-          return [3, 6];
-        case 5:
-          error_1 = _a.sent();
-          logger.error("Error creating Django match:", error_1);
-          return [3, 6];
-        case 6:
-          matchState.phase = GamePhase.MATCH_ACTIVE;
-          startTime = Date.now();
-          Object.values(matchState.players).forEach(function (player) {
-            player.start_time = startTime;
-          });
-          message = {
-            type: MESSAGES.SERVER.MATCH_STARTED,
-            initial_board: matchState.initial_board.cells,
-            players: Object.keys(matchState.players).length
-          };
-          dispatcher.broadcastMessage(ServerOpCodes.MATCH_STARTED, JSON.stringify(message));
+      logger.info("Starting Sudoku match");
+      try {
+        initialBoardCells = matchState.initial_board.cells;
+        if (!Array.isArray(initialBoardCells) || initialBoardCells.length === 0) {
+          logger.error("Invalid initial board data:", initialBoardCells);
           return [2];
+        }
+        body = {
+          event: "game_started",
+          event_id: nk.uuidv4(),
+          match_id: ctx.matchId,
+          region: "global",
+          players: [],
+          initial_board_hash: nk.sha256Hash(initialBoardCells.join(',')),
+          ts: Date.now()
+        };
+        url = ctx.env["PUBLISHER_URL"];
+        token = ctx.env["PUBLISHER_AUTH_TOKEN"];
+        logger.debug("[MATCHJOIN.STARTMATCH] URL: ".concat(url));
+        logger.debug("[MATCHJOIN.STARTMATCH] TOKEN: ".concat(token));
+        res = nk.httpRequest(url + "/v1/events/game-started", 'post', {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + token,
+          "X-Idempotency-Key": body.event_id
+        }, JSON.stringify(body), 5000);
+        logger.debug("[MATCHJOIN.STARTMATCH] Response: ".concat(JSON.stringify(res)));
+        logger.debug("[MATCHJOIN.STARTMATCH] ".concat(res));
+      } catch (error) {
+        logger.error("Error creating Django match:", error.message || error);
+        logger.error("Error creating Django match:", error.stack);
       }
+      startTime = new Date().getTime();
+      Object.values(matchState.players).forEach(function (player) {
+        player.start_time = startTime;
+      });
+      message = {
+        type: MESSAGES.SERVER.MATCH_STARTED,
+        initial_board: matchState.initial_board.cells,
+        players: Object.keys(matchState.players).length
+      };
+      dispatcher.broadcastMessage(ServerOpCodes.MATCH_STARTED, JSON.stringify(message));
+      return [2];
     });
   });
 }
@@ -864,7 +861,7 @@ function handleGameCompletion(ctx, logger, nk, dispatcher, matchState, winnerId)
 }
 function finishDjangoMatch(ctx, logger, nk, matchState) {
   return __awaiter(this, void 0, void 0, function () {
-    var djangoClient, winner, endTime, result, error_2;
+    var djangoClient, winner, endTime, result, error_1;
     return __generator(this, function (_a) {
       switch (_a.label) {
         case 0:
@@ -885,8 +882,8 @@ function finishDjangoMatch(ctx, logger, nk, matchState) {
           }
           return [3, 4];
         case 3:
-          error_2 = _a.sent();
-          logger.error("Error finishing Django match:", error_2);
+          error_1 = _a.sent();
+          logger.error("Error finishing Django match:", error_1);
           return [3, 4];
         case 4:
           return [2];

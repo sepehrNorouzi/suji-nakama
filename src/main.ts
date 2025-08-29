@@ -1,4 +1,6 @@
-import * as SudokuMatch from "./match/sudoku-match-handler";
+import * as SudokuMatch from "./match/match";
+import {matchmakerMatched} from './match/match-maker';
+import * as Authenticator from './authentication/authentication' 
 
 function rpcHealthcheck(
 	ctx: nkruntime.Context,
@@ -18,6 +20,7 @@ let InitModule: nkruntime.InitModule = function (
 ) {
 	// Register healthcheck
 	initializer.registerRpc("healthcheck", rpcHealthcheck);
+	initializer.registerBeforeAuthenticateCustom(Authenticator.BeforeAuthenticateCustom);
 
 	initializer.registerMatch("sudoku", {
 		matchInit: SudokuMatch.matchInit,
@@ -28,7 +31,7 @@ let InitModule: nkruntime.InitModule = function (
 		matchTerminate: SudokuMatch.matchTerminate,
 		matchSignal: SudokuMatch.matchSignal,
 	});
-	initializer.registerMatchmakerMatched(SudokuMatch.matchmakerMatched);
+	initializer.registerMatchmakerMatched(matchmakerMatched);
 
 	logger.info("Nakama Sudoku match handler registered successfully.");
 };

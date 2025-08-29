@@ -1,6 +1,6 @@
 from typing import List, Optional
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 
@@ -27,5 +27,5 @@ def finalize_event(e: BaseEvent) -> BaseEvent:
     if e.event_id is None:
         e.event_id = uuid4()
     if e.ts is None:
-        e.ts = datetime.utcnow()
+        e.ts = datetime.now(tz=timezone.utc)
     return e

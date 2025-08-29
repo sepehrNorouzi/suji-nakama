@@ -10,6 +10,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "dotenv": "^17.2.1",
     "nakama-runtime": "github:heroiclabs/nakama-common"
   },
   "devDependencies": {
