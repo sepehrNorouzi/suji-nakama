@@ -25,21 +25,31 @@ export async function startMatch(
       return;
     }
 
-    const body = {
-      event: "game_started",
-      event_id: nk.uuidv4(),
-      match_id: ctx.matchId,
-      region: "global",
-      players: [],
-      initial_board_hash: nk.sha256Hash(initialBoardCells.join(',')),
-      ts: Date.now(),
-    };
-
     const url = ctx.env["PUBLISHER_URL"];
     const token = ctx.env["PUBLISHER_AUTH_TOKEN"];
 
+	const server_ids = [];
+
     logger.debug(`[MATCHJOIN.STARTMATCH] URL: ${url}`);
     logger.debug(`[MATCHJOIN.STARTMATCH] TOKEN: ${token}`);
+
+	const startTime = new Date().getTime();
+	Object.values(matchState.players).forEach((player) => {
+		server_ids.push(player.user_id);
+		player.start_time = startTime;
+	});
+
+	const body = {
+		event: "game_started",
+		event_id: nk.uuidv4(),
+		match_id: ctx.matchId,
+		region: "global",
+		players: server_ids,
+		initial_board_hash: nk.sha256Hash(initialBoardCells.join(',')),
+		ts: Date.now(),
+	  };
+
+	logger.debug(`BODY: ${JSON.stringify(body)}`)
 
     // HTTP request to the publisher
     const res = nk.httpRequest(
@@ -61,11 +71,6 @@ export async function startMatch(
 		logger.error("Error creating Django match:", error.message || error);
 		logger.error("Error creating Django match:", error.stack);
 	}
-
-	const startTime = new Date().getTime();
-	Object.values(matchState.players).forEach((player) => {
-		player.start_time = startTime;
-	});
 
 	// Broadcast match started
 	const message = {

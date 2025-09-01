@@ -20,4 +20,5 @@ runtime:
   env: 
     - "PUBLISHER_URL=http://publisher:8080"
     - "PUBLISHER_AUTH_TOKEN=publisher_token"
+    - "JWT_SECRET_KEY=django-insecure-!dummy-dev-key-please-change-me!"
   js_entrypoint: "./index.js"

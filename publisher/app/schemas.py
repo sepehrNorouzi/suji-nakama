@@ -12,8 +12,7 @@ class BaseEvent(BaseModel):
 
 
 class Player(BaseModel):
-    id: str
-    username: Optional[str] = None
+    id: UUID
 
 
 class GameStarted(BaseEvent):

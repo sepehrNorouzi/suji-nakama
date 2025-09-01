@@ -99,7 +99,7 @@ export function matchJoin(
                 user_id: presence.userId,
                 profile_name:
                     presence.username || `Player_${presence.userId.slice(-4)}`,
-                avatar: "",
+                avatar: '',
                 private_board: { cells: [...matchState.initial_board.cells] },
                 public_board: {
                     cells: [...matchState.initial_board.cells],

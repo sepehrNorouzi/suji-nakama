@@ -25,5 +25,6 @@ export default {
   ],
   output: {
     file: 'modules/index.js',
+    format: 'cjs'
   },
 };

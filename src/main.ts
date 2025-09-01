@@ -21,6 +21,7 @@ let InitModule: nkruntime.InitModule = function (
 	// Register healthcheck
 	initializer.registerRpc("healthcheck", rpcHealthcheck);
 	initializer.registerBeforeAuthenticateCustom(Authenticator.BeforeAuthenticateCustom);
+	initializer.registerAfterAuthenticateCustom(Authenticator.AfterAuthenticateCustom);
 
 	initializer.registerMatch("sudoku", {
 		matchInit: SudokuMatch.matchInit,
